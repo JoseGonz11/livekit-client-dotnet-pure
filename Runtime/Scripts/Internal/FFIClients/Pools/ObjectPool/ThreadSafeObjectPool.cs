@@ -1,45 +1,32 @@
 using System;
 using System.Collections.Concurrent;
-using UnityEngine.Pool;
 
 namespace LiveKit.Internal.FFIClients.Pools.ObjectPool
 {
-    public class ThreadSafeObjectPool<T> : IObjectPool<T> where T : class
+    public class ThreadSafeObjectPool<T> where T : class
     {
-        private readonly Func<T> create;
-        private readonly Action<T>? actionOnRelease;
-        private readonly ConcurrentBag<T> bag = new();
+        private readonly ConcurrentBag<T> _objects = new ConcurrentBag<T>();
+        private readonly Func<T> _objectGenerator;
+        private readonly Action<T>? _actionOnRelease;
 
-        public ThreadSafeObjectPool(Func<T> create, Action<T>? actionOnRelease = null)
+        public ThreadSafeObjectPool(Func<T> objectGenerator, Action<T>? actionOnRelease = null)
         {
-            this.create = create;
-            this.actionOnRelease = actionOnRelease;
+            _objectGenerator = objectGenerator ?? throw new ArgumentNullException(nameof(objectGenerator));
+            _actionOnRelease = actionOnRelease;
         }
 
         public T Get()
         {
-            return bag.TryTake(out var result) 
-                ? result!
-                : create()!;
+            if (_objects.TryTake(out T item)) 
+                return item;
+                
+            return _objectGenerator();
         }
 
-        public PooledObject<T> Get(out T v)
+        public void Release(T item)
         {
-            v = Get();
-            return new PooledObject<T>();
+            _actionOnRelease?.Invoke(item);
+            _objects.Add(item);
         }
-
-        public void Release(T element)
-        {
-            actionOnRelease?.Invoke(element);
-            bag.Add(element);
-        }
-
-        public void Clear()
-        {
-            bag.Clear();
-        }
-
-        public int CountInactive => bag.Count;
     }
 }

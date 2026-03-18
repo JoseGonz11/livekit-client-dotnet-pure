@@ -5,6 +5,14 @@ using LiveKit.Internal.FFIClients.Requests;
 
 namespace LiveKit
 {
+    public abstract class IRtcSource
+    {
+        internal FfiHandle Handle { get; set; }
+        
+        public abstract void SetMute(bool muted);
+        public abstract bool Muted { get; }
+    }
+    
     public interface ITrack
     {
         string Sid { get; protected set; }
@@ -15,17 +23,6 @@ namespace LiveKit
         WeakReference<Room> Room { get; }
         WeakReference<Participant> Participant { get; }
         FfiHandle TrackHandle { get; }
-        
-        public GetSessionStatsInstruction GetStats()
-        {
-            using var request = FFIBridge.Instance.NewRequest<GetStatsRequest>();
-            var getStats = request.request;
-            getStats.TrackHandle = (ulong)TrackHandle.DangerousGetHandle();
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new GetSessionStatsInstruction(res.GetStats.AsyncId);
-        }
-
     }
 
     public interface ILocalTrack : ITrack
@@ -73,8 +70,10 @@ namespace LiveKit
     public class Track : ITrack
     {
         private TrackInfo _info;
+        public TrackInfo Info => _info;
 
         public string Sid => _info.Sid;
+        public ulong Id { get; private set; }
         public string Name => _info.Name;
         public TrackKind Kind => _info.Kind;
         public StreamState StreamState => _info.StreamState;
@@ -82,7 +81,6 @@ namespace LiveKit
         public WeakReference<Room> Room { internal set; get; }
         public WeakReference<Participant> Participant { get; }
 
-        // IsOwned is true if C# owns the handle
         public bool IsOwned => Handle != null && !Handle.IsInvalid;
 
         public readonly FfiHandle Handle;
@@ -93,6 +91,7 @@ namespace LiveKit
 
         internal Track(OwnedTrack track, Room room, Participant participant)
         {
+            Id = track.Handle.Id;
             Handle = FfiHandle.FromOwnedHandle(track.Handle);
             Room = new WeakReference<Room>(room);
             Participant = new WeakReference<Participant>(participant);
@@ -112,50 +111,59 @@ namespace LiveKit
 
     public sealed class LocalAudioTrack : Track, ILocalTrack, IAudioTrack
     {
-        RtcAudioSource _source;
+        public IRtcSource source { get; }
 
-        IRtcSource ILocalTrack.source { get => _source; }
-
-        internal LocalAudioTrack(OwnedTrack track, Room room, RtcAudioSource source) : base(track, room, room?.LocalParticipant) {
-            _source = source;
+        internal LocalAudioTrack(OwnedTrack track, Room room, IRtcSource src) : base(track, room, room?.LocalParticipant) {
+            source = src;
         }
 
-        public static LocalAudioTrack CreateAudioTrack(string name, RtcAudioSource source, Room room)
+        public static LocalAudioTrack CreateAudioTrack(string name, IRtcSource src, Room room)
         {
-            using var request = FFIBridge.Instance.NewRequest<CreateAudioTrackRequest>();
-            var createTrack = request.request;
-            createTrack.Name = name;
-            createTrack.SourceHandle = (ulong)source.Handle.DangerousGetHandle();
+            var request = new FfiRequest {
+                CreateAudioTrack = new CreateAudioTrackRequest {
+                    Name = name,
+                    SourceHandle = (ulong)src.Handle.DangerousGetHandle()
+                }
+            };
 
-            using var resp = request.Send();
-            FfiResponse res = resp;
-            var trackInfo = res.CreateAudioTrack.Track;
-            var track = new LocalAudioTrack(trackInfo, room, source);
-            return track;
+            var res = FfiClient.Instance.SendRequest(request);
+            return new LocalAudioTrack(res.CreateAudioTrack.Track, room, src);
+        }
+    }
+    
+    public class NativeAudioSource : IRtcSource
+    {
+        private bool _muted;
+        public override bool Muted => _muted;
+
+        public NativeAudioSource(OwnedAudioSource source)
+        {
+            Handle = FfiHandle.FromOwnedHandle(source.Handle);
+        }
+
+        public override void SetMute(bool muted)
+        {
+            _muted = muted;
         }
     }
 
     public sealed class LocalVideoTrack : Track, ILocalTrack, IVideoTrack
     {
-        public RtcVideoSource source;
+        public IRtcSource source { get; }
 
-        IRtcSource ILocalTrack.source => source;
-
-        internal LocalVideoTrack(OwnedTrack track, Room room, RtcVideoSource source) : base(track, room, room?.LocalParticipant) {
-            this.source = source;
+        internal LocalVideoTrack(OwnedTrack track, Room room, IRtcSource src) : base(track, room, room?.LocalParticipant) {
+            source = src;
         }
 
-        public static LocalVideoTrack CreateVideoTrack(string name, RtcVideoSource source, Room room)
+        public static LocalVideoTrack CreateVideoTrack(string name, IRtcSource src, Room room)
         {
-            using var request = FFIBridge.Instance.NewRequest<CreateVideoTrackRequest>();
-            var createTrack = request.request;
-            createTrack.Name = name;
-            createTrack.SourceHandle = (ulong)source.Handle.DangerousGetHandle();
-            using var response = request.Send();
-            FfiResponse res = response;
-            var trackInfo = res.CreateVideoTrack.Track;
-            var track = new LocalVideoTrack(trackInfo, room, source);
-            return track;
+            using var requestWrap = FFIBridge.Instance.NewRequest<CreateVideoTrackRequest>();
+            requestWrap.request.Name = name;
+            requestWrap.request.SourceHandle = (ulong)src.Handle.DangerousGetHandle();
+
+            using var respWrap = requestWrap.Send();
+            FfiResponse res = respWrap;
+            return new LocalVideoTrack(res.CreateVideoTrack.Track, room, src);
         }
     }
 
@@ -167,34 +175,5 @@ namespace LiveKit
     public sealed class RemoteVideoTrack : Track, IRemoteTrack, IVideoTrack
     {
         internal RemoteVideoTrack(OwnedTrack track, Room room, RemoteParticipant participant) : base(track, room, participant) { }
-    }
-    
-    public sealed class GetSessionStatsInstruction : YieldInstruction
-    {
-        private readonly ulong _asyncId;
-        public RtcStats[] Stats;
-        public string Error;
-
-        internal GetSessionStatsInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.GetSessionStatsReceived += OnGetSessionStatsReceived;
-        }
-
-        private void OnGetSessionStatsReceived(GetStatsCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            Error = e.Error;
-            IsError = !string.IsNullOrEmpty(Error);
-            IsDone = true;
-            Stats = new RtcStats[e.Stats.Count];
-            for (var i = 0; i < e.Stats.Count; i++)
-            {
-                Stats[i] = e.Stats[i];
-            }
-            FfiClient.Instance.GetSessionStatsReceived -= OnGetSessionStatsReceived;
-        }
     }
 }

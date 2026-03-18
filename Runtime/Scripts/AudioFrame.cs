@@ -1,7 +1,6 @@
 using System;
 using LiveKit.Proto;
 using LiveKit.Internal;
-using Unity.Collections;
 
 namespace LiveKit
 {
@@ -22,7 +21,7 @@ namespace LiveKit
 
         public AudioFrameBufferInfo Info => _info;
 
-        private NativeArray<byte> _allocatedData; // Only used if the frame's data is allocated by Unity
+        private byte[] _allocatedData; // Only used if the frame's data is allocated by Unity
         private IntPtr _dataPtr;
         public IntPtr Data => _dataPtr;
 
@@ -53,9 +52,9 @@ namespace LiveKit
         {
             if (!_disposed)
             {
-                if (_allocatedData.IsCreated)
+                if (_allocatedData != null)
                 {
-                    _allocatedData.Dispose();
+                    _allocatedData = null; 
                 }
                 _disposed = true;
             }

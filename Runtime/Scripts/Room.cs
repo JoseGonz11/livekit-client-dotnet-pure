@@ -4,7 +4,6 @@ using LiveKit.Internal;
 using LiveKit.Proto;
 using System.Runtime.InteropServices;
 using LiveKit.Internal.FFIClients.Requests;
-using UnityEngine;
 
 namespace LiveKit
 {
@@ -162,13 +161,39 @@ namespace LiveKit
         public event ParticipantDelegate ParticipantNameChanged;
         public event ParticipantDelegate ParticipantAttributesChanged;
 
-        public ConnectInstruction Connect(string url, string token, RoomOptions options)
+        public Task<Room> ConnectAsync(string url, string token, RoomOptions options)
         {
-            using var response = FFIBridge.Instance.SendConnectRequest(url, token, options);
-            Utils.Debug("Connect....");
-            FfiResponse res = response;
-            Utils.Debug($"Connect response.... {response}");
-            return new ConnectInstruction(res.Connect.AsyncId, this, options);
+            using var responseWrap = FFIBridge.Instance.SendConnectRequest(url, token, options);
+            FfiResponse res = responseWrap;
+            var asyncId = res.Connect.AsyncId;
+
+            var tcs = new TaskCompletionSource<Room>();
+
+            ConnectReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+
+                FfiClient.Instance.ConnectReceived -= handler;
+
+                if (!string.IsNullOrEmpty(e.Error))
+                {
+                    tcs.TrySetException(new Exception($"Connect Error: {e.Error}"));
+                }
+                else
+                {
+                    if (options.E2EE != null)
+                    {
+                        this.E2EEManager = new E2EEManager(FfiHandle.FromOwnedHandle(e.Result.Room.Handle), options.E2EE);
+                    }
+
+                    this.OnConnect(e);
+                    tcs.TrySetResult(this);
+                }
+            };
+
+            FfiClient.Instance.ConnectReceived += handler;
+            return tcs.Task;
         }
 
         public void Disconnect()
@@ -566,43 +591,6 @@ namespace LiveKit
 
             RemoteParticipants.TryGetValue(identity, out var remoteParticipant);
             return remoteParticipant;
-        }
-    }
-
-    public sealed class ConnectInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private Room _room;
-        private RoomOptions _roomOptions;
-
-        internal ConnectInstruction(ulong asyncId, Room room, RoomOptions options)
-        {
-            _asyncId = asyncId;
-            _room = room;
-            _roomOptions = options;
-            FfiClient.Instance.ConnectReceived += OnConnect;
-        }
-
-        void OnConnect(ConnectCallback e)
-        {
-            if (_asyncId != e.AsyncId)
-                return;
-
-            FfiClient.Instance.ConnectReceived -= OnConnect;
-
-            bool success = string.IsNullOrEmpty(e.Error);
-            if (success)
-            {
-                if (_roomOptions.E2EE != null)
-                {
-                    _room.E2EEManager = new E2EEManager(_room.RoomHandle, _roomOptions.E2EE);
-                }
-
-                _room.OnConnect(e);
-            }
-
-            IsError = !success;
-            IsDone = true;
         }
     }
 }

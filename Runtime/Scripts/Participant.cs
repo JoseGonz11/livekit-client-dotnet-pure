@@ -64,65 +64,75 @@ namespace LiveKit
 
         internal LocalParticipant(OwnedParticipant participant, Room room) : base(participant, room) { }
 
-        public PublishTrackInstruction PublishTrack(ILocalTrack localTrack, TrackPublishOptions options)
+        public Task<LocalTrackPublication> PublishTrackAsync(ILocalTrack localTrack, TrackPublishOptions options)
         {
-            if (!Room.TryGetTarget(out var room))
-                throw new Exception("room is invalid");
-
             var track = (Track)localTrack;
-
             using var request = FFIBridge.Instance.NewRequest<PublishTrackRequest>();
             var publish = request.request;
             publish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             publish.TrackHandle = (ulong)track.Handle.DangerousGetHandle();
             publish.Options = options;
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new PublishTrackInstruction(res.PublishTrack.AsyncId, localTrack, _tracks);
+
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.PublishTrack.AsyncId;
+
+            var tcs = new TaskCompletionSource<LocalTrackPublication>();
+
+            PublishTrackDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.PublishTrackReceived -= handler;
+
+                if (!string.IsNullOrEmpty(e.Error))
+                {
+                    tcs.TrySetException(new Exception(e.Error));
+                }
+                else
+                {
+                    var publication = new LocalTrackPublication(e.Publication.Info);
+                    publication.UpdateTrack(track);
+                    localTrack.UpdateSid(publication.Sid);
+                    _tracks.Add(e.Publication.Info.Sid, publication);
+                    tcs.TrySetResult(publication);
+                }
+            };
+
+            FfiClient.Instance.PublishTrackReceived += handler;
+            return tcs.Task;
         }
 
-        public UnpublishTrackInstruction UnpublishTrack(ILocalTrack localTrack, bool stopOnUnpublish)
+        public Task UnpublishTrackAsync(ILocalTrack localTrack, bool stopOnUnpublish)
         {
-            if (!Room.TryGetTarget(out var room))
-                throw new Exception("room is invalid");
-
             using var request = FFIBridge.Instance.NewRequest<UnpublishTrackRequest>();
             var unpublish = request.request;
             unpublish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
-            unpublish.StopOnUnpublish = false;
             unpublish.TrackSid = localTrack.Sid;
-            using var response = request.Send();
-            FfiResponse res = response;
-            _tracks.Remove(localTrack.Sid);
-            return new UnpublishTrackInstruction(res.UnpublishTrack.AsyncId);
-        }
 
-        public void PublishData(byte[] data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
-        {
-            PublishData(new Span<byte>(data), destination_identities, reliable, topic);
-        }
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.UnpublishTrack.AsyncId;
 
-        public void PublishData(Span<byte> data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
-        {
-            unsafe
+            var tcs = new TaskCompletionSource();
+
+            UnpublishTrackDelegate handler = null!;
+            handler = e =>
             {
-                fixed (byte* pointer = data)
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.UnpublishTrackReceived -= handler;
+
+                if (!string.IsNullOrEmpty(e.Error))
+                    tcs.TrySetException(new Exception(e.Error));
+                else
                 {
-                    PublishData(pointer, data.Length, destination_identities, reliable, topic);
+                    _tracks.Remove(localTrack.Sid);
+                    tcs.TrySetResult();
                 }
-            }
-        }
+            };
 
-        [Obsolete("Use SetMetadata instead")]
-        public void UpdateMetadata(string metadata)
-        {
-            SetMetadata(metadata);
-        }
-
-        [Obsolete("Use SetName instead")]
-        public void UpdateName(string name)
-        {
-            SetName(name);
+            FfiClient.Instance.UnpublishTrackReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -132,16 +142,28 @@ namespace LiveKit
         /// This requires `canUpdateOwnMetadata` permission.
         /// </remarks>
         /// <param name="metadata">The new metadata.</param>
-        public SetLocalMetadataInstruction SetMetadata(string metadata)
+        public Task SetMetadataAsync(string metadata)
         {
             using var request = FFIBridge.Instance.NewRequest<SetLocalMetadataRequest>();
             var setReq = request.request;
             setReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             setReq.Metadata = metadata;
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalMetadataInstruction(res.SetLocalMetadata.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.SetLocalMetadata.AsyncId;
+
+            var tcs = new TaskCompletionSource();
+            SetLocalMetadataReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.SetLocalMetadataReceived -= handler;
+                if (!string.IsNullOrEmpty(e.Error)) tcs.TrySetException(new Exception(e.Error));
+                else tcs.TrySetResult();
+            };
+            FfiClient.Instance.SetLocalMetadataReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -151,16 +173,28 @@ namespace LiveKit
         /// This requires `canUpdateOwnMetadata` permission.
         /// </remarks>
         /// <param name="name">The new name.</param>
-        public new SetLocalNameInstruction SetName(string name)
+        public Task SetNameAsync(string name)
         {
             using var request = FFIBridge.Instance.NewRequest<SetLocalNameRequest>();
             var setReq = request.request;
             setReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
             setReq.Name = name;
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalNameInstruction(res.SetLocalName.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.SetLocalName.AsyncId;
+
+            var tcs = new TaskCompletionSource();
+            SetLocalNameReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.SetLocalNameReceived -= handler;
+                if (!string.IsNullOrEmpty(e.Error)) tcs.TrySetException(new Exception(e.Error));
+                else tcs.TrySetResult();
+            };
+            FfiClient.Instance.SetLocalNameReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -171,32 +205,37 @@ namespace LiveKit
         /// </remarks>
         /// <param name="attributes">The new attributes. Existing attributes that
         /// are not overridden will remain unchanged.</param>
-        public SetLocalAttributesInstruction SetAttributes(IDictionary<string, string> attributes)
+        public Task SetAttributes(IDictionary<string, string> attributes)
         {
             using var request = FFIBridge.Instance.NewRequest<SetLocalAttributesRequest>();
             var setReq = request.request;
             setReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
 
+            // Lógica de mezcla de atributos (se mantiene igual)
             var newAttributes = new Dictionary<string, string>(Attributes);
-            foreach (var kvp in attributes)
-            {
-                // Override existing attributes
-                newAttributes[kvp.Key] = kvp.Value;
-            }
+            foreach (var kvp in attributes) newAttributes[kvp.Key] = kvp.Value;
 
             foreach (var kvp in newAttributes)
             {
-                var entry = new AttributesEntry
-                {
-                    Key = kvp.Key,
-                    Value = kvp.Value
-                };
-                setReq.Attributes.Add(entry);
+                setReq.Attributes.Add(new AttributesEntry { Key = kvp.Key, Value = kvp.Value });
             }
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new SetLocalAttributesInstruction(res.SetLocalAttributes.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.SetLocalAttributes.AsyncId;
+
+            var tcs = new TaskCompletionSource();
+            SetLocalAttributesReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.SetLocalAttributesReceived -= handler;
+                if (!string.IsNullOrEmpty(e.Error)) tcs.TrySetException(new Exception(e.Error));
+                else tcs.TrySetResult();
+            };
+
+            FfiClient.Instance.SetLocalAttributesReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -217,7 +256,7 @@ namespace LiveKit
         /// <remarks>
         /// See https://docs.livekit.io/home/client/data/rpc/#errors for a list of possible error codes.
         /// </remarks>
-        public PerformRpcInstruction PerformRpc(PerformRpcParams rpcParams)
+        public Task<string> PerformRpcAsync(PerformRpcParams rpcParams)
         {
             using var request = FFIBridge.Instance.NewRequest<PerformRpcRequest>();
             var rpcReq = request.request;
@@ -227,27 +266,41 @@ namespace LiveKit
             rpcReq.Payload = rpcParams.Payload;
             rpcReq.ResponseTimeoutMs = (uint)(rpcParams.ResponseTimeout * 1000);
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new PerformRpcInstruction(res.PerformRpc.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.PerformRpc.AsyncId;
+
+            var tcs = new TaskCompletionSource<string>();
+            PerformRpcReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.PerformRpcReceived -= handler;
+                if (e.Error != null) tcs.TrySetException(new Exception(e.Error.Message));
+                else tcs.TrySetResult(e.Payload);
+            };
+            FfiClient.Instance.PerformRpcReceived += handler;
+            return tcs.Task;
         }
-
-        /// <summary>
-        /// Registers a new RPC method handler.
-        /// </summary>
-        /// <param name="method">The name of the RPC method to register</param>
-        /// <param name="handler">The async callback that handles incoming RPC requests. It receives an RpcInvocationData object
-        /// containing the caller's identity, payload (up to 15KiB UTF-8), and response timeout. Must return a string response or throw
-        /// an RpcError. Any other exceptions will be converted to a generic APPLICATION_ERROR (1500).</param>
-        public void RegisterRpcMethod(string method, RpcHandler handler)
+        
+        public void PublishData(byte[] data, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
         {
-            _rpcHandlers[method] = handler;
-
-            using var request = FFIBridge.Instance.NewRequest<RegisterRpcMethodRequest>();
-            var registerReq = request.request;
-            registerReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
-            registerReq.Method = method;
-            var resp = request.Send();
+            unsafe
+            {
+                fixed (byte* pointer = data)
+                {
+                    if (!Room.TryGetTarget(out _)) throw new Exception("room is invalid");
+                    using var request = FFIBridge.Instance.NewRequest<PublishDataRequest>();
+                    var publish = request.request;
+                    publish.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+                    publish.Reliable = reliable;
+                    if (destination_identities != null) publish.DestinationIdentities.AddRange(destination_identities);
+                    if (topic != null) publish.Topic = topic;
+                    publish.DataLen = (ulong)data.Length;
+                    publish.DataPtr = (ulong)pointer;
+                    request.Send();
+                }
+            }
         }
 
         /// <summary>
@@ -310,20 +363,6 @@ namespace LiveKit
             }
         }
 
-        private void SendRpcResponse(ulong invocationId, string responsePayload, RpcError responseError)
-        {
-            using var request = FFIBridge.Instance.NewRequest<RpcMethodInvocationResponseRequest>();
-            var rpcResp = request.request;
-            rpcResp.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
-            rpcResp.InvocationId = invocationId;
-
-            if (responseError != null)
-                rpcResp.Error = responseError.ToProto();
-            if (responsePayload != null)
-                rpcResp.Payload = responsePayload;
-
-            var response = request.Send();
-        }
 
         private unsafe void PublishData(byte* data, int len, IReadOnlyCollection<string> destination_identities = null, bool reliable = true, string topic = null)
         {
@@ -372,7 +411,7 @@ namespace LiveKit
         /// properties to handle the result.
         /// </returns>
         ///
-        public SendTextInstruction SendText(string text, StreamTextOptions options)
+        public Task<TextStreamInfo> SendTextAsync(string text, StreamTextOptions options)
         {
             using var request = FFIBridge.Instance.NewRequest<StreamSendTextRequest>();
             var sendTextReq = request.request;
@@ -380,9 +419,24 @@ namespace LiveKit
             sendTextReq.Text = text;
             sendTextReq.Options = options.ToProto();
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new SendTextInstruction(res.SendText.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.SendText.AsyncId;
+
+            var tcs = new TaskCompletionSource<TextStreamInfo>();
+            SendTextReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.SendTextReceived -= handler;
+                if (e.ResultCase == StreamSendTextCallback.ResultOneofCase.Error)
+                    tcs.TrySetException(new Exception(e.Error.Description));
+                else
+                    tcs.TrySetResult(new TextStreamInfo(e.Info));
+            };
+
+            FfiClient.Instance.SendTextReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -399,11 +453,11 @@ namespace LiveKit
         /// properties to handle the result.
         /// </returns>
         ///
-        public SendTextInstruction SendText(string text, string topic)
+        public Task<TextStreamInfo> SendTextAsync(string text, string topic)
         {
             var options = new StreamTextOptions();
             options.Topic = topic;
-            return SendText(text, options);
+            return SendTextAsync(text, options);
         }
 
         /// <summary>
@@ -418,7 +472,7 @@ namespace LiveKit
         /// properties to handle the result.
         /// </returns>
         ///
-        public SendFileInstruction SendFile(string path, StreamByteOptions options)
+        public Task<ByteStreamInfo> SendFileAsync(string path, StreamByteOptions options)
         {
             using var request = FFIBridge.Instance.NewRequest<StreamSendFileRequest>();
             var sendFileReq = request.request;
@@ -426,9 +480,24 @@ namespace LiveKit
             sendFileReq.FilePath = path;
             sendFileReq.Options = options.ToProto();
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new SendFileInstruction(res.SendFile.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.SendFile.AsyncId;
+
+            var tcs = new TaskCompletionSource<ByteStreamInfo>();
+            SendFileReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.SendFileReceived -= handler;
+                if (e.ResultCase == StreamSendFileCallback.ResultOneofCase.Error)
+                    tcs.TrySetException(new Exception(e.Error.Description));
+                else
+                    tcs.TrySetResult(new ByteStreamInfo(e.Info));
+            };
+
+            FfiClient.Instance.SendFileReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -445,38 +514,11 @@ namespace LiveKit
         /// properties to handle the result.
         /// </returns>
         ///
-        public SendFileInstruction SendFile(string path, string topic)
+        public Task<ByteStreamInfo> SendFileAsync(string path, string topic)
         {
             var options = new StreamByteOptions();
             options.Topic = topic;
-            return SendFile(path, options);
-        }
-
-        /// <summary>
-        /// Stream text incrementally to participants in the room.
-        /// </summary>
-        /// <remarks>
-        /// This method allows sending text data in chunks as it becomes available.
-        /// Unlike <see cref="SendText"/>, which sends the entire text at once, this method allows
-        /// using a writer to send text incrementally.
-        /// </remarks>
-        /// <param name="options">Configuration options for the text stream, including topic and
-        /// destination participants.</param>
-        /// <returns>
-        /// A <see cref="StreamTextInstruction"/> that completes once the stream is open or errors.
-        /// Check <see cref="StreamTextInstruction.IsError"/> and access <see cref="StreamTextInstruction.Writer"/>
-        /// to access the writer for the opened stream.
-        /// </returns>
-        public StreamTextInstruction StreamText(StreamTextOptions options)
-        {
-            using var request = FFIBridge.Instance.NewRequest<TextStreamOpenRequest>();
-            var streamTextReq = request.request;
-            streamTextReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
-            streamTextReq.Options = options.ToProto();
-
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new StreamTextInstruction(res.TextStreamOpen.AsyncId);
+            return SendFileAsync(path, options);
         }
 
         /// <summary>
@@ -494,16 +536,30 @@ namespace LiveKit
         /// Check <see cref="StreamBytesInstruction.IsError"/> and access <see cref="StreamBytesInstruction.Writer"/>
         /// to access the writer for the opened stream.
         /// </returns>
-        public StreamBytesInstruction StreamBytes(StreamByteOptions options)
+        public Task<ByteStreamWriter> StreamBytesAsync(StreamByteOptions options)
         {
             using var request = FFIBridge.Instance.NewRequest<ByteStreamOpenRequest>();
-            var streamBytesReq = request.request;
-            streamBytesReq.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
-            streamBytesReq.Options = options.ToProto();
+            request.request.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+            request.request.Options = options.ToProto();
 
-            using var response = request.Send();
-            FfiResponse res = response;
-            return new StreamBytesInstruction(res.ByteStreamOpen.AsyncId);
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.ByteStreamOpen.AsyncId;
+
+            var tcs = new TaskCompletionSource<ByteStreamWriter>();
+            ByteStreamOpenReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.ByteStreamOpenReceived -= handler;
+                if (e.ResultCase == ByteStreamOpenCallback.ResultOneofCase.Error)
+                    tcs.TrySetException(new Exception(e.Error.Description));
+                else
+                    tcs.TrySetResult(new ByteStreamWriter(e.Writer));
+            };
+
+            FfiClient.Instance.ByteStreamOpenReceived += handler;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -518,10 +574,10 @@ namespace LiveKit
         /// Check <see cref="StreamBytesInstruction.IsError"/> and access <see cref="StreamBytesInstruction.Writer"/>
         /// to access the writer for the opened stream.
         /// </returns>
-        public StreamBytesInstruction StreamBytes(string topic)
+        public Task<ByteStreamWriter> StreamBytesAsync(string topic)
         {
             var options = new StreamByteOptions { Topic = topic };
-            return StreamBytes(options);
+            return StreamBytesAsync(options);
         }
 
         /// <summary>
@@ -536,10 +592,66 @@ namespace LiveKit
         /// Check <see cref="StreamTextInstruction.IsError"/> and access <see cref="StreamTextInstruction.Writer"/>
         /// to access the writer for the opened stream.
         /// </returns>
-        public StreamTextInstruction StreamText(string topic)
+        public Task<TextStreamWriter> StreamTextAsync(StreamTextOptions options)
+        {
+            using var request = FFIBridge.Instance.NewRequest<TextStreamOpenRequest>();
+            request.request.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+            request.request.Options = options.ToProto();
+
+            using var responseWrap = request.Send();
+            FfiResponse res = responseWrap;
+            var asyncId = res.TextStreamOpen.AsyncId;
+
+            var tcs = new TaskCompletionSource<TextStreamWriter>();
+            TextStreamOpenReceivedDelegate handler = null!;
+            handler = e =>
+            {
+                if (e.AsyncId != asyncId) return;
+                FfiClient.Instance.TextStreamOpenReceived -= handler;
+                if (e.ResultCase == TextStreamOpenCallback.ResultOneofCase.Error)
+                    tcs.TrySetException(new Exception(e.Error.Description));
+                else
+                    tcs.TrySetResult(new TextStreamWriter(e.Writer));
+            };
+            FfiClient.Instance.TextStreamOpenReceived += handler;
+            return tcs.Task;
+        }
+        
+        public Task<TextStreamWriter> StreamTextAsync(string topic)
         {
             var options = new StreamTextOptions { Topic = topic };
-            return StreamText(options);
+            return StreamTextAsync(options);
+        }
+        
+        /// <summary>
+        /// Registers a new RPC method handler.
+        /// </summary>
+        /// <param name="method">The name of the RPC method to register</param>
+        /// <param name="handler">The async callback that handles incoming RPC requests. It receives an RpcInvocationData object
+        /// containing the caller's identity, payload (up to 15KiB UTF-8), and response timeout. Must return a string response or throw
+        /// an RpcError. Any other exceptions will be converted to a generic APPLICATION_ERROR (1500).</param>
+        public void RegisterRpcMethod(string method, RpcHandler handler)
+        {
+            _rpcHandlers[method] = handler;
+            using var request = FFIBridge.Instance.NewRequest<RegisterRpcMethodRequest>();
+            request.request.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+            request.request.Method = method;
+            request.Send();
+        }
+
+        /// <summary>
+        /// Unregisters a previously registered RPC method handler.
+        /// </summary>
+        /// <param name="method">The name of the RPC method to unregister</param>
+        private void SendRpcResponse(ulong invocationId, string responsePayload, RpcError responseError)
+        {
+            using var request = FFIBridge.Instance.NewRequest<RpcMethodInvocationResponseRequest>();
+            var rpcResp = request.request;
+            rpcResp.LocalParticipantHandle = (ulong)Handle.DangerousGetHandle();
+            rpcResp.InvocationId = invocationId;
+            if (responseError != null) rpcResp.Error = responseError.ToProto();
+            if (responsePayload != null) rpcResp.Payload = responsePayload;
+            request.Send();
         }
     }
 
@@ -549,370 +661,5 @@ namespace LiveKit
             base.Tracks.ToDictionary(p => p.Key, p => (RemoteTrackPublication)p.Value);
 
         internal RemoteParticipant(OwnedParticipant participant, Room room) : base(participant, room) { }
-    }
-
-    public sealed class PublishTrackInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private Dictionary<string, TrackPublication> _internalTracks;
-        private ILocalTrack _localTrack;
-
-        internal PublishTrackInstruction(ulong asyncId, ILocalTrack localTrack, Dictionary<string, TrackPublication> internalTracks)
-        {
-            _asyncId = asyncId;
-            _internalTracks = internalTracks;
-            _localTrack = localTrack;
-            FfiClient.Instance.PublishTrackReceived += OnPublish;
-        }
-
-        internal void OnPublish(PublishTrackCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            var publication = new LocalTrackPublication(e.Publication.Info);
-            publication.UpdateTrack(_localTrack as Track);
-            _localTrack.UpdateSid(publication.Sid);
-            _internalTracks.Add(e.Publication.Info.Sid, publication);
-            FfiClient.Instance.PublishTrackReceived -= OnPublish;
-        }
-    }
-
-    public sealed class SetLocalMetadataInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-
-        internal SetLocalMetadataInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalMetadataReceived += OnSetLocalMetadata;
-        }
-
-        internal void OnSetLocalMetadata(SetLocalMetadataCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalMetadataReceived -= OnSetLocalMetadata;
-        }
-    }
-
-    public sealed class SetLocalNameInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-
-        internal SetLocalNameInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalNameReceived += OnSetLocalName;
-        }
-
-        internal void OnSetLocalName(SetLocalNameCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalNameReceived -= OnSetLocalName;
-        }
-    }
-
-    public sealed class SetLocalAttributesInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-
-        internal SetLocalAttributesInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SetLocalAttributesReceived += OnSetLocalAttributes;
-        }
-
-        internal void OnSetLocalAttributes(SetLocalAttributesCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.SetLocalAttributesReceived -= OnSetLocalAttributes;
-        }
-    }
-
-    public sealed class UnpublishTrackInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-
-        internal UnpublishTrackInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.UnpublishTrackReceived += OnUnpublish;
-        }
-
-        internal void OnUnpublish(UnpublishTrackCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            IsError = !string.IsNullOrEmpty(e.Error);
-            IsDone = true;
-            FfiClient.Instance.UnpublishTrackReceived -= OnUnpublish;
-        }
-    }
-
-    /// <summary>
-    /// YieldInstruction for RPC calls. Returned by <see cref="LocalParticipant.PerformRpc"/>.
-    /// </summary>
-    /// <remarks>
-    /// Access <see cref="Payload"/> after checking <see cref="IsError"/>
-    /// </remarks>
-    public sealed class PerformRpcInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private string _payload;
-
-        internal PerformRpcInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.PerformRpcReceived += OnRpcResponse;
-        }
-
-        internal void OnRpcResponse(PerformRpcCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-
-            if (e.Error != null)
-            {
-                Error = RpcError.FromProto(e.Error);
-                IsError = true;
-                Utils.Error($"RPC error received: {Error}");
-            }
-            else
-            {
-                _payload = e.Payload;
-            }
-            IsDone = true;
-            FfiClient.Instance.PerformRpcReceived -= OnRpcResponse;
-        }
-
-        /// <summary>
-        /// Getter for the RPC response payload. Check <see cref="IsError"/> before calling this method.
-        /// </summary>
-        /// <exception cref="RpcError">Thrown if the RPC call resulted in an error</exception>
-        public string Payload
-        {
-            get
-            {
-                if (IsError)
-                    throw Error;
-                return _payload;
-            }
-        }
-
-        /// <summary>
-        /// Getter for RPC response error.
-        /// </summary>
-        /// <remarks>
-        /// See <see cref="RpcError"/> for more information on error codes.
-        /// </remarks>
-        public RpcError Error { get; private set; }
-    }
-
-    /// <summary>
-    /// YieldInstruction for send text. Returned by <see cref="LocalParticipant.SendText"/>.
-    /// </summary>
-    /// <remarks>
-    /// Access <see cref="Info"/> after checking <see cref="IsError"/>
-    /// </remarks>
-    public sealed class SendTextInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private TextStreamInfo _info;
-
-        internal SendTextInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SendTextReceived += OnSendText;
-        }
-
-        internal void OnSendText(StreamSendTextCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            switch (e.ResultCase)
-            {
-                case StreamSendTextCallback.ResultOneofCase.Error:
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                    break;
-                case StreamSendTextCallback.ResultOneofCase.Info:
-                    _info = new TextStreamInfo(e.Info);
-                    break;
-            }
-            IsDone = true;
-            FfiClient.Instance.SendTextReceived -= OnSendText;
-        }
-
-        public TextStreamInfo Info
-        {
-            get
-            {
-                if (IsError) throw Error;
-                return _info;
-            }
-        }
-
-        public StreamError Error { get; private set; }
-    }
-
-    /// <summary>
-    /// YieldInstruction for send file. Returned by <see cref="LocalParticipant.SendFile"/>.
-    /// </summary>
-    /// <remarks>
-    /// Access <see cref="Info"/> after checking <see cref="IsError"/>
-    /// </remarks>
-    public sealed class SendFileInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private ByteStreamInfo _info;
-
-        internal SendFileInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.SendFileReceived += OnSendFile;
-        }
-
-        internal void OnSendFile(StreamSendFileCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            switch (e.ResultCase)
-            {
-                case StreamSendFileCallback.ResultOneofCase.Error:
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                    break;
-                case StreamSendFileCallback.ResultOneofCase.Info:
-                    _info = new ByteStreamInfo(e.Info);
-                    break;
-            }
-            IsDone = true;
-            FfiClient.Instance.SendFileReceived -= OnSendFile;
-        }
-
-        public ByteStreamInfo Info
-        {
-            get
-            {
-                if (IsError) throw Error;
-                return _info;
-            }
-        }
-
-        public StreamError Error { get; private set; }
-    }
-
-    /// <summary>
-    /// YieldInstruction for stream text. Returned by <see cref="LocalParticipant.StreamText"/>.
-    /// </summary>
-    /// <remarks>
-    /// Access <see cref="Writer"/> after checking <see cref="IsError"/>
-    /// </remarks>
-    public sealed class StreamTextInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private TextStreamWriter _writer;
-
-        internal StreamTextInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.TextStreamOpenReceived += OnStreamOpen;
-        }
-
-        internal void OnStreamOpen(TextStreamOpenCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            switch (e.ResultCase)
-            {
-                case TextStreamOpenCallback.ResultOneofCase.Error:
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                    break;
-                case TextStreamOpenCallback.ResultOneofCase.Writer:
-                    _writer = new TextStreamWriter(e.Writer);
-                    break;
-            }
-            IsDone = true;
-            FfiClient.Instance.TextStreamOpenReceived -= OnStreamOpen;
-        }
-
-        public TextStreamWriter Writer
-        {
-            get
-            {
-                if (IsError) throw Error;
-                return _writer;
-            }
-        }
-
-        public StreamError Error { get; private set; }
-    }
-
-    /// <summary>
-    /// YieldInstruction for stream bytes. Returned by <see cref="LocalParticipant.StreamBytes"/>.
-    /// </summary>
-    /// <remarks>
-    /// Access <see cref="Writer"/> after checking <see cref="IsError"/>
-    /// </remarks>
-    public sealed class StreamBytesInstruction : YieldInstruction
-    {
-        private ulong _asyncId;
-        private ByteStreamWriter _writer;
-
-        internal StreamBytesInstruction(ulong asyncId)
-        {
-            _asyncId = asyncId;
-            FfiClient.Instance.ByteStreamOpenReceived += OnStreamOpen;
-        }
-
-        internal void OnStreamOpen(ByteStreamOpenCallback e)
-        {
-            if (e.AsyncId != _asyncId)
-                return;
-
-            switch (e.ResultCase)
-            {
-                case ByteStreamOpenCallback.ResultOneofCase.Error:
-                    Error = new StreamError(e.Error);
-                    IsError = true;
-                    break;
-                case ByteStreamOpenCallback.ResultOneofCase.Writer:
-                    _writer = new ByteStreamWriter(e.Writer);
-                    break;
-            }
-            IsDone = true;
-            FfiClient.Instance.ByteStreamOpenReceived -= OnStreamOpen;
-        }
-
-        public ByteStreamWriter Writer
-        {
-            get
-            {
-                if (IsError) throw Error;
-                return _writer;
-            }
-        }
-
-        public StreamError Error { get; private set; }
     }
 }
