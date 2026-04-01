@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "G+4k65l94qI=",
+  "success": true,
+  "projectFilePath": "H:\\AmperComm\\Client\\Shared\\LiveKit\\LiveKit.Client.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Radeo\\.nuget\\packages\\google.protobuf\\3.34.1\\google.protobuf.3.34.1.nupkg.sha512"
+  ],
+  "logs": []
+}
